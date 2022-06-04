@@ -5,6 +5,12 @@ import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import numpy as np
 import seaborn as sns
+import scipy as sp
+import itertools
+import pandas as pd
+import statsmodels.api as sm
+import matplotlib.pylab as plt
+
 from matplotlib import lines
 from matplotlib.font_manager import FontProperties
 
@@ -60,6 +66,105 @@ _DEFAULT_VALUES = {
 }
 
 ENGINE_PLOTTERS = {"seaborn": _SeabornPlotter}
+
+
+def add_tukeyletter(fig_args, axs, text_y_pos, **anno_args):
+    if 'hue' in fig_args.keys():
+        tuk_letters = _get_tukeyLetters(fig_args['data'][fig_args['y']], fig_args['data'][fig_args['x']] + "_" + fig_args['data'][fig_args['hue']] )
+        iter_groups = itertools.product(fig_args['order'], fig_args['hue_order'])
+    else:
+        tuk_letters = _get_tukeyLetters(fig_args['data'][fig_args['y']], fig_args['data'][fig_args['x']] )
+        iter_groups = list( fig_args['order'] )
+    lines = axs.get_lines()
+    boxes = [c for c in axs.get_children() if type(c).__name__ == 'PathPatch']
+    lines_per_box = int(len(lines) / len(boxes))
+    for median,ef_x in zip(lines[4:len(lines):lines_per_box], iter_groups):
+        x, y = (data.mean() for data in median.get_data())
+        if 'hue' in fig_args.keys():
+            axs.text(x, text_y_pos, tuk_letters.loc[ef_x[0] + "_" + ef_x[1]], **anno_args)
+        else:
+            axs.text(x, text_y_pos, tuk_letters.loc[ef_x[0]], **anno_args)
+    return(tuk_letters)
+
+def _get_tukeyLetters(values, groups, means=None, alpha=0.05):
+    '''
+    Adapted a function from here
+    https://stackoverflow.com/questions/43987651/tukey-test-grouping-and-plotting-in-scipy?noredirect=1&lq=1
+
+
+    TUKEYLETTERS - Produce list of group labels for TukeyHSD
+    letters = TUKEYLETTERS(pp), where PP is a symmetric matrix of 
+    probabilities from a Tukey test, returns alphabetic labels
+    for each group to indicate clustering. PP may also be a vector
+    from PAIRWISE_TUKEYHSD.
+    Optional argument MEANS specifies group means, which is used for
+    ordering the letters. ("a" gets assigned to the group with lowest
+    mean.) Without this argument, ordering is arbitrary.
+    Optional argument ALPHA specifies cutoff for treating groups as
+    part of the same cluster.
+    '''
+
+    ## First remove any NAs
+    ef_data = pd.DataFrame( {"values": values, "groups": groups} ).dropna()
+    tuk = sm.stats.multicomp.pairwise_tukeyhsd( ef_data['values'].values, ef_data['groups'].values, alpha=0.05 )
+    tuk_grps = tuk.groupsunique
+    pp = pd.DataFrame(data=tuk._results_table.data[1:], columns=tuk._results_table.data[0])
+    pp = pp.set_index(['group1','group2'])['p-adj'].unstack().reindex(tuk_grps).T.reindex(tuk_grps)
+    # pp = np.triu(pp) + np.triu(pp,1).T
+    np.fill_diagonal(pp.values, 1)
+    pp = np.tril(pp,0) + np.tril(pp,-1).T
+
+
+    if len(pp.shape)==1:
+        # vector
+        G = int(3 + np.sqrt(9 - 4*(2-len(pp))))//2
+        ppp = .5*np.eye(G)
+        ppp[np.triu_indices(G,1)] = pp    
+        pp = ppp + ppp.T
+    conn = pp>alpha
+    G = len(conn)
+    if np.all(conn):
+        return ['a' for g in range(G)]
+    conns = []
+    for g1 in range(G):
+        for g2 in range(g1+1,G):
+            if conn[g1,g2]:
+                conns.append((g1,g2))
+
+    letters = [ [] for g in range(G) ]
+    nextletter = 0
+    for g in range(G):
+        if np.sum(conn[g,:])==1:
+            letters[g].append(nextletter)
+            nextletter += 1
+    while len(conns):
+        grp = set(conns.pop(0))
+        for g in range(G):
+            if all(conn[g, np.sort(list(grp))]):
+                grp.add(g)
+        for g in grp:
+            letters[g].append(nextletter)
+        for g in grp:
+            for h in grp:
+                if (g,h) in conns:
+                    conns.remove((g,h))
+        nextletter += 1
+
+    if means is None:
+        means = np.arange(G)
+    means = np.array(means)
+    groupmeans = []
+    for k in range(nextletter):
+        ingroup = [g for g in range(G) if k in letters[g]]
+        groupmeans.append(means[np.array(ingroup)].mean())
+    ordr = np.empty(nextletter, int)
+    ordr[np.argsort(groupmeans)] = np.arange(nextletter)
+    result = []
+    for ltr in letters:
+        lst = [chr(97 + ordr[x]) for x in ltr]
+        lst.sort()
+        result.append(''.join(lst))
+    return(pd.Series(result, index = tuk_grps) )
 
 
 class Annotator:
